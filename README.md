@@ -7,6 +7,10 @@ A single-page tool to see a Reddit user's posts and comments without using `site
 1. Open `index.html` in a browser (or the GitHub Pages URL, once enabled).
 2. Enter a username (`spez`, `u/spez` or a full profile URL all work).
 3. Switch between **All**, **Posts** and **Comments**, filter by subreddit or text, and use **Load more** for older history.
+4. Tap **Stats** for most active communities, approximate topic categories, time-of-day, day-of-week and monthly activity, and highest-scoring items. Stats cover the items loaded so far; **Load full history** fetches up to 1,000 items from Reddit (3,000 from the archive).
+5. **Home** (or the page title) clears everything for a new search.
+
+Typing `r/name` in the filter shows only that community.
 
 Bookmark `index.html?u=username` to open someone directly.
 

@@ -17,7 +17,10 @@
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   main { max-width: 820px; margin: 0 auto; padding: 16px; }
-  h1 { font-size: 1.3rem; margin: 4px 0 12px; }
+  .title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 12px; }
+  h1 { font-size: 1.3rem; margin: 0; }
+  h1 a { color: inherit; text-decoration: none; }
+  #reset { padding: 6px 12px; font-size: 14px; }
   form { display: flex; gap: 8px; }
   input[type=text] { flex: 1; min-width: 0; padding: 10px 12px; font-size: 16px;
          border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); }
@@ -48,11 +51,34 @@
   .more { background: none; border: 0; padding: 4px 0; color: var(--accent); font-size: 13px; }
   #loadMore { width: 100%; margin: 8px 0 32px; }
   .hint { font-size: 12.5px; color: var(--muted); }
+  .stats section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 10px 0; }
+  .stats h3 { font-size: .95rem; margin: 0 0 8px; }
+  .stats .note { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+  .tile { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .tile b { display: block; font-size: 1.3rem; }
+  .tile span { font-size: 12.5px; color: var(--muted); }
+  .bar-row { display: grid; grid-template-columns: minmax(90px, 34%) 1fr auto; gap: 8px; align-items: center;
+             font-size: 13.5px; padding: 3px 0; }
+  .bar-row button { all: unset; cursor: pointer; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-row .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track { height: 10px; background: var(--chip); border-radius: 4px; overflow: hidden; }
+  .bar { display: block; height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+  .val { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+  .cols { display: flex; align-items: flex-end; gap: 2px; height: 90px; }
+  .col { flex: 1; background: var(--accent); border-radius: 4px 4px 0 0; min-height: 1px; }
+  .col.zero { background: var(--chip); }
+  .col-labels { display: flex; gap: 2px; font-size: 11px; color: var(--muted); }
+  .col-labels span { flex: 1; min-width: 0; text-align: center; overflow: visible; white-space: nowrap; }
+  .top a { color: var(--text); }
 </style>
 </head>
 <body>
 <main>
-  <h1>Reddit User Viewer</h1>
+  <div class="title-row">
+    <h1><a id="home" href="./">Reddit User Viewer</a></h1>
+    <button id="reset" type="button" hidden>Home</button>
+  </div>
   <form id="form">
     <input id="user" type="text" placeholder="Username, e.g. spez or u/spez" autocomplete="off"
            autocapitalize="off" spellcheck="false" required>
@@ -65,6 +91,10 @@
       <button type="button" data-type="posts" aria-pressed="false">Posts</button>
       <button type="button" data-type="comments" aria-pressed="false">Comments</button>
     </div>
+    <div class="tabs" role="group" aria-label="View">
+      <button type="button" data-view="list" aria-pressed="true">List</button>
+      <button type="button" data-view="stats" aria-pressed="false">Stats</button>
+    </div>
     <select id="source" aria-label="Data source">
       <option value="auto">Source: Auto</option>
       <option value="reddit">Source: Reddit (live)</option>
@@ -76,10 +106,12 @@
   <div id="profile" class="profile" hidden></div>
   <div id="status" class="status" hidden></div>
   <div id="results"></div>
+  <div id="stats" class="stats" hidden></div>
   <button id="loadMore" type="button" hidden>Load more</button>
 
   <p class="hint">Live data comes from Reddit. If Reddit refuses the request or the profile history is hidden,
     Auto switches to the Arctic Shift archive, which may lag behind and omits deleted content.
+    Stats summarise the items loaded so far; use "Load full history" for a fuller picture.
     Tip: bookmark <code>?u=username</code> to jump straight to someone.</p>
 </main>
 
@@ -89,7 +121,26 @@
   const PAGE = 100;
   const ARCHIVE = "https://arctic-shift.photon-reddit.com/api";
 
-  const state = { user: "", type: "all", source: "auto", activeSource: null,
+  const FULL_CAP = { reddit: 1000, archive: 3000 }; // Reddit's listings stop at about 1,000 items anyway
+
+  // Rough subreddit-to-category rules, first match wins. Names only, so treat results as indicative.
+  const CATEGORIES = [
+    ["UK & local", /^(uk|unitedkingdom|casualuk|britishproblems|britishsuccess|london|manchester|nottingham|leeds|birmingham|bristol|liverpool|sheffield|glasgow|edinburgh|cardiff|scotland|wales|ireland|northernireland|england)$|uk$|^uk|^british/],
+    ["News & politics", /news|politic|geopolitic|^europe$|conservative|labour|democrat|republican|law$/],
+    ["Technology", /tech|programming|python|javascript|typescript|coding|sysadmin|linux|apple|iphone|ipad|mac|android|windows|homelab|selfhosted|cscareer|webdev|devops|azure|aws|gadget|chatgpt|openai|claude|artificial|machinelearning|singularity|llama|^ai$|software|hardware|buildapc|pcmasterrace|cybersecurity|netsec|excel|microsoft/],
+    ["Gaming", /gam(e|es|ing)|playstation|ps[45]|xbox|nintendo|switch|steam|minecraft|pokemon|fortnite|eldenring|zelda|warzone|valorant|leagueoflegends|wow$/],
+    ["Sport", /football|soccer|nfl|nba|cricket|rugby|^f1|formula1|tennis|golf|cycling|premierleague|coys|reddevils|liverpoolfc|gunners|chelseafc|mcfc|lufc|nffc|boxing|mma|ufc|sport/],
+    ["Money & work", /financ|invest|stocks|wallstreetbets|crypto|bitcoin|money|^fire$|fatfire|career|jobs|antiwork|work|salary|recruit|managers|consulting|accounting|entrepreneur|smallbusiness/],
+    ["Entertainment", /movie|film|television|^tv|netflix|music|books|marvel|starwars|anime|manga|fantasy|hiphop|podcast|comedy|youtube|celeb|doctorwho|taskmaster/],
+    ["Questions & discussion", /^ask|ask$|explain|nostupidquestions|outoftheloop|changemyview|tooafraidtoask|unpopularopinion|showerthoughts|todayilearned|answers|discussion|^casual|^nostalgia/],
+    ["Humour & memes", /meme|funny|humou?r|jokes|shitpost|copypasta|wholesome|facepalm|mildlyinfuriating|interestingasfuck|damnthatsinteresting|pics|videos|gifs|oddlysatisfying/],
+    ["Relationships & advice", /relationship|advice|aita|amitheasshole|parent|dating|marriage|family|mumsnet|legal/],
+    ["Health & fitness", /fitness|health|loseit|nutrition|diet|keto|running|gym|weightlift|mental|adhd|autism|anxiety|depression|medical|medicine|nursing|doctor|sleep|vegan/],
+    ["Hobbies & home", /diy|cooking|food|recipe|baking|garden|plant|woodworking|homeimprovement|home|3dprint|photo|lego|cars|motorcycle|travel|coffee|tea$|beer|whisky|wine|cats|dogs|aww|pets|watch|fashion|knitting|craft|hiking|camping|outdoors/],
+    ["Education & science", /science|physics|chemistry|biology|math|history|askhistorians|academia|phd|gradschool|university|college|student|teach|education|space|astronomy|economics|philosophy|psychology/],
+  ];
+
+  const state = { user: "", type: "all", source: "auto", activeSource: null, view: "list", gen: 0,
                   items: [], seen: new Set(), cursor: null, done: false, busy: false };
 
   // ---------- Data sources ----------
@@ -176,14 +227,32 @@
   }
 
   function reset() {
-    Object.assign(state, { items: [], seen: new Set(), cursor: null, done: false, activeSource: null });
+    // Bumping gen makes any request still in flight discard its result.
+    Object.assign(state, { items: [], seen: new Set(), cursor: null, done: false, activeSource: null,
+                           busy: false, gen: state.gen + 1 });
     $("results").innerHTML = "";
+    $("stats").innerHTML = "";
     $("loadMore").hidden = true;
+  }
+
+  function goHome() {
+    state.user = "";
+    reset();
+    $("user").value = "";
+    $("filter").value = "";
+    $("profile").hidden = true;
+    $("reset").hidden = true;
+    setStatus("");
+    const url = new URL(location.href);
+    url.searchParams.delete("u");
+    history.replaceState(null, "", url);
+    $("user").focus();
   }
 
   async function start() {
     if (!state.user) return;
     reset();
+    $("reset").hidden = false;
     const url = new URL(location.href);
     url.searchParams.set("u", state.user);
     history.replaceState(null, "", url);
@@ -191,8 +260,18 @@
     await loadMore();
   }
 
+  async function loadAll() {
+    const gen = state.gen;
+    while (!state.done && gen === state.gen) {
+      const cap = FULL_CAP[state.activeSource === archive ? "archive" : "reddit"];
+      if (state.items.length >= cap) break;
+      if (!(await loadMore())) break;
+    }
+  }
+
   async function loadMore() {
     if (state.busy || state.done || !state.user) return;
+    const gen = state.gen;
     state.busy = true;
     $("loadMore").disabled = true;
     setStatus(state.items.length ? "Loading more…" : `Loading u/${state.user}…`);
@@ -212,6 +291,7 @@
         result = await archive.page(state.user, state.type, null);
         state.activeSource = archive;
       }
+      if (gen !== state.gen) return false;
       const fresh = result.items.filter((i) => !state.seen.has(i.id));
       fresh.forEach((i) => state.seen.add(i.id));
       state.items = state.items.concat(fresh).sort((a, b) => b.created - a.created);
@@ -223,13 +303,18 @@
         ? `${count} item${count === 1 ? "" : "s"} from ${state.activeSource.name}${state.done ? ", end of history" : ""}.`
         : `Nothing found for u/${state.user} in ${state.activeSource.name}. The account may not exist, ` +
           `may be suspended, or may have no public activity.`);
+      return true;
     } catch (err) {
+      if (gen !== state.gen) return false;
       setStatus(`Could not load u/${state.user}: ${err.message}. Reddit sometimes blocks anonymous requests; ` +
                 `try switching the source, or use the links above.`, true);
+      return false;
     } finally {
-      state.busy = false;
-      $("loadMore").disabled = false;
-      $("loadMore").hidden = state.done || !state.items.length;
+      if (gen === state.gen) {
+        state.busy = false;
+        $("loadMore").disabled = false;
+        $("loadMore").hidden = state.done || !state.items.length;
+      }
     }
   }
 
@@ -240,8 +325,10 @@
       · <a href="https://www.google.com/search?q=${encodeURIComponent(`site:reddit.com "u/${state.user}"`)}" target="_blank" rel="noopener">Google search</a></div>`;
     box.hidden = false;
     box.innerHTML = `<strong>u/${esc(state.user)}</strong>${links}`;
+    const gen = state.gen;
     try {
       const d = await reddit.about(state.user);
+      if (gen !== state.gen) return;
       const joined = new Date(d.created_utc * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
       box.innerHTML = `<strong>u/${esc(d.name)}</strong> · joined ${joined} · ` +
         `${(d.link_karma || 0).toLocaleString("en-GB")} post karma · ${(d.comment_karma || 0).toLocaleString("en-GB")} comment karma${links}`;
@@ -262,9 +349,19 @@
   }
 
   function render() {
+    const stats = state.view === "stats";
+    $("results").hidden = stats;
+    $("stats").hidden = !stats;
+    if (stats) renderStats(); else renderList();
+  }
+
+  function renderList() {
     const q = $("filter").value.trim().toLowerCase();
+    // "r/name" filters to exactly that community; anything else is a substring search.
+    const sub = q.startsWith("r/") ? q.slice(2) : null;
     const shown = state.items.filter((i) => state.type === "all" || (state.type === "posts") === (i.kind === "post"))
-      .filter((i) => !q || [i.subreddit, i.title, i.context, i.body].some((f) => (f || "").toLowerCase().includes(q)));
+      .filter((i) => !q || (sub !== null ? (i.subreddit || "").toLowerCase() === sub
+        : [i.subreddit, i.title, i.context, i.body].some((f) => (f || "").toLowerCase().includes(q))));
     $("results").innerHTML = shown.map((i) => {
       const date = new Date(i.created * 1000);
       const head = i.kind === "post"
@@ -294,6 +391,139 @@
     });
   }
 
+  function categoryOf(subreddit) {
+    const name = (subreddit || "").toLowerCase();
+    const hit = CATEGORIES.find(([, re]) => re.test(name));
+    return hit ? hit[0] : "Other";
+  }
+
+  function tally(keys) {
+    const m = new Map();
+    keys.forEach((k) => m.set(k, (m.get(k) || 0) + 1));
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }
+
+  function barRows(rows, total, labelFn) {
+    const max = rows.length ? rows[0][1] : 1;
+    return rows.map(([key, n, extra]) => {
+      const pct = Math.round((n / total) * 100);
+      return `<div class="bar-row" title="${esc(`${key}: ${n} (${pct}%)${extra ? ", " + extra : ""}`)}">
+        ${labelFn(key)}
+        <span class="track"><span class="bar" style="width:${(n / max) * 100}%"></span></span>
+        <span class="val">${n} · ${pct}%</span></div>`;
+    }).join("");
+  }
+
+  function columns(values, labels, titleFn) {
+    const max = Math.max(1, ...values);
+    return `<div class="cols">${values.map((v, i) =>
+      `<div class="col${v ? "" : " zero"}" style="height:${(v / max) * 100}%" title="${esc(titleFn(i, v))}"></div>`).join("")}</div>
+      <div class="col-labels">${labels.map((l) => `<span>${esc(l)}</span>`).join("")}</div>`;
+  }
+
+  function renderStats() {
+    const items = state.items;
+    const el = $("stats");
+    if (!items.length) { el.innerHTML = ""; return; }
+    const fmtDate = (s) => new Date(s * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    const posts = items.filter((i) => i.kind === "post");
+    const comments = items.filter((i) => i.kind === "comment");
+    const scored = items.filter((i) => typeof i.score === "number");
+    const avg = scored.length ? Math.round(scored.reduce((s, i) => s + i.score, 0) / scored.length) : "n/a";
+    const newest = items[0].created, oldest = items[items.length - 1].created;
+
+    // Communities, with post/comment split and average score for the tooltip.
+    const bySub = new Map();
+    items.forEach((i) => {
+      const r = bySub.get(i.subreddit) || { n: 0, p: 0, c: 0, score: 0 };
+      r.n++; i.kind === "post" ? r.p++ : r.c++; r.score += i.score || 0;
+      bySub.set(i.subreddit, r);
+    });
+    const subRows = [...bySub.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 15)
+      .map(([name, r]) => [name, r.n, `${r.p} posts, ${r.c} comments, avg score ${Math.round(r.score / r.n)}`]);
+    const catRows = tally(items.map((i) => categoryOf(i.subreddit)));
+
+    // Timing in the viewer's own time zone.
+    const hours = Array(24).fill(0), days = Array(7).fill(0);
+    items.forEach((i) => { const d = new Date(i.created * 1000); hours[d.getHours()]++; days[(d.getDay() + 6) % 7]++; });
+    const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const months = [];
+    const end = new Date(newest * 1000), start = new Date(oldest * 1000);
+    for (let d = new Date(end.getFullYear(), end.getMonth(), 1); d >= new Date(start.getFullYear(), start.getMonth(), 1) && months.length < 24;
+         d.setMonth(d.getMonth() - 1)) months.unshift({ y: d.getFullYear(), m: d.getMonth(), n: 0 });
+    items.forEach((i) => {
+      const d = new Date(i.created * 1000);
+      const slot = months.find((x) => x.y === d.getFullYear() && x.m === d.getMonth());
+      if (slot) slot.n++;
+    });
+    const monthLabel = (x) => new Date(x.y, x.m, 1).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "your time zone";
+    const peakHour = hours.indexOf(Math.max(...hours));
+
+    const best = (list) => list.reduce((a, b) => ((b.score ?? -Infinity) > (a?.score ?? -Infinity) ? b : a), null);
+    const topPost = best(posts), topComment = best(comments);
+    const snippet = (t) => esc((t || "").replace(/\s+/g, " ").slice(0, 140)) + ((t || "").length > 140 ? "…" : "");
+
+    const srcName = state.activeSource ? state.activeSource.name : "";
+    const cap = FULL_CAP[state.activeSource === archive ? "archive" : "reddit"];
+    const canLoadAll = !state.done && items.length < cap;
+
+    el.innerHTML = `
+      <section>
+        <p class="note" style="margin:0">Based on the ${items.length} most recent items loaded from ${esc(srcName)},
+          covering ${fmtDate(oldest)} to ${fmtDate(newest)}.${state.done ? " This is the full history available." :
+          " Older activity is not included yet."}</p>
+        ${canLoadAll ? `<button id="loadAll" type="button" style="margin-top:8px">Load full history (up to ${cap.toLocaleString("en-GB")} items)</button>` : ""}
+      </section>
+      <div class="tiles">
+        <div class="tile"><b>${posts.length}</b><span>posts</span></div>
+        <div class="tile"><b>${comments.length}</b><span>comments</span></div>
+        <div class="tile"><b>${bySub.size}</b><span>communities</span></div>
+        <div class="tile"><b>${avg}</b><span>average score</span></div>
+      </div>
+      <section>
+        <h3>Most active communities</h3>
+        ${barRows(subRows, items.length, (name) => `<button type="button" data-sub="${esc(name)}">r/${esc(name)}</button>`)}
+        <p class="note">Share of loaded items. Tap a community to list that activity.${bySub.size > 15 ? ` Top 15 of ${bySub.size} shown.` : ""}</p>
+      </section>
+      <section>
+        <h3>Topic categories</h3>
+        ${barRows(catRows, items.length, (name) => `<span class="lbl">${esc(name)}</span>`)}
+        <p class="note">Approximate. Categories are inferred from community names, so niche communities fall into Other.</p>
+      </section>
+      <section>
+        <h3>Time of day</h3>
+        ${columns(hours, hours.map((_, h) => (h % 6 === 0 ? String(h).padStart(2, "0") : "")), (h, v) => `${String(h).padStart(2, "0")}:00 to ${String(h).padStart(2, "0")}:59: ${v}`)}
+        <p class="note">Busiest around ${String(peakHour).padStart(2, "0")}:00. Times shown in ${esc(tz)}.</p>
+      </section>
+      <section>
+        <h3>Day of week</h3>
+        ${columns(days, dayNames, (d, v) => `${dayNames[d]}: ${v}`)}
+      </section>
+      ${months.length > 1 ? `<section>
+        <h3>Activity by month</h3>
+        ${columns(months.map((x) => x.n), months.map((x, i) => (i % Math.ceil(months.length / 6) === 0 ? monthLabel(x) : "")), (i, v) => `${monthLabel(months[i])}: ${v}`)}
+      </section>` : ""}
+      <section class="top">
+        <h3>Highest scoring</h3>
+        ${topPost ? `<p class="note">Post (${topPost.score} points, r/${esc(topPost.subreddit)}): <a href="${esc(topPost.permalink)}" target="_blank" rel="noopener">${snippet(topPost.title)}</a></p>` : ""}
+        ${topComment ? `<p class="note">Comment (${topComment.score} points, r/${esc(topComment.subreddit)}): <a href="${esc(topComment.permalink)}" target="_blank" rel="noopener">${snippet(topComment.body)}</a></p>` : ""}
+      </section>`;
+
+    el.querySelectorAll("[data-sub]").forEach((b) => b.addEventListener("click", () => {
+      $("filter").value = "r/" + b.dataset.sub;
+      setView("list");
+    }));
+    const all = $("loadAll");
+    if (all) all.addEventListener("click", () => { all.disabled = true; all.textContent = "Loading…"; loadAll(); });
+  }
+
+  function setView(view) {
+    state.view = view;
+    document.querySelectorAll("[data-view]").forEach((x) => x.setAttribute("aria-pressed", x.dataset.view === view));
+    render();
+  }
+
   function setStatus(msg, isError = false) {
     const el = $("status");
     el.hidden = !msg;
@@ -309,11 +539,14 @@
     $("user").value = state.user;
     start();
   });
-  document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
-    document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  document.querySelectorAll("[data-type]").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-type]").forEach((x) => x.setAttribute("aria-pressed", x === b));
     state.type = b.dataset.type;
     start();
   }));
+  document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+  $("reset").addEventListener("click", goHome);
+  $("home").addEventListener("click", (e) => { e.preventDefault(); goHome(); });
   $("source").addEventListener("change", (e) => { state.source = e.target.value; start(); });
   $("filter").addEventListener("input", render);
   $("loadMore").addEventListener("click", loadMore);

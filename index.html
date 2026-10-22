@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reddit User Viewer</title>
+<style>
+  :root {
+    --bg: #f6f7f8; --card: #ffffff; --text: #1a1a1b; --muted: #6b6f73;
+    --border: #dfe1e3; --accent: #d93a00; --accent-text: #ffffff; --chip: #eef0f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0e1113; --card: #1a1d1f; --text: #e6e8ea; --muted: #9aa0a6;
+            --border: #2c3033; --accent: #ff6a33; --accent-text: #111; --chip: #262a2d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 820px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.3rem; margin: 4px 0 12px; }
+  form { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; min-width: 0; padding: 10px 12px; font-size: 16px;
+         border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); }
+  button { padding: 10px 14px; font-size: 15px; border-radius: 8px; border: 1px solid var(--border);
+           background: var(--card); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+  .tabs button[aria-pressed=true] { background: var(--text); color: var(--bg); border-color: var(--text); }
+  select { padding: 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 14px; }
+  .filter { flex: 1; min-width: 140px; padding: 8px 10px; font-size: 14px; }
+  .profile, .status { padding: 10px 12px; border-radius: 8px; background: var(--card);
+                      border: 1px solid var(--border); margin: 12px 0; font-size: 14px; }
+  .status.error { border-color: var(--accent); }
+  .profile a, .links a, .meta a { color: var(--accent); }
+  .links { font-size: 13px; color: var(--muted); margin-top: 8px; }
+  .item { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+          padding: 12px; margin: 10px 0; overflow-wrap: anywhere; }
+  .meta { font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 10px; }
+  .kind { background: var(--chip); padding: 0 6px; border-radius: 4px; font-weight: 600; }
+  .item h2 { font-size: 1rem; margin: 6px 0 4px; }
+  .item h2 a, .context a { color: var(--text); text-decoration: none; }
+  .item h2 a:hover, .context a:hover { text-decoration: underline; }
+  .context { font-size: 13px; color: var(--muted); margin: 6px 0 2px; }
+  .body { white-space: pre-wrap; margin: 6px 0 0; font-size: 14px; max-height: 18em; overflow: hidden; position: relative; }
+  .body.clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3em;
+                         background: linear-gradient(transparent, var(--card)); }
+  .more { background: none; border: 0; padding: 4px 0; color: var(--accent); font-size: 13px; }
+  #loadMore { width: 100%; margin: 8px 0 32px; }
+  .hint { font-size: 12.5px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Reddit User Viewer</h1>
+  <form id="form">
+    <input id="user" type="text" placeholder="Username, e.g. spez or u/spez" autocomplete="off"
+           autocapitalize="off" spellcheck="false" required>
+    <button class="primary" type="submit">View</button>
+  </form>
+
+  <div class="controls">
+    <div class="tabs" role="group" aria-label="Content type">
+      <button type="button" data-type="all" aria-pressed="true">All</button>
+      <button type="button" data-type="posts" aria-pressed="false">Posts</button>
+      <button type="button" data-type="comments" aria-pressed="false">Comments</button>
+    </div>
+    <select id="source" aria-label="Data source">
+      <option value="auto">Source: Auto</option>
+      <option value="reddit">Source: Reddit (live)</option>
+      <option value="archive">Source: Arctic Shift (archive)</option>
+    </select>
+    <input id="filter" class="filter" type="text" placeholder="Filter by subreddit or text">
+  </div>
+
+  <div id="profile" class="profile" hidden></div>
+  <div id="status" class="status" hidden></div>
+  <div id="results"></div>
+  <button id="loadMore" type="button" hidden>Load more</button>
+
+  <p class="hint">Live data comes from Reddit. If Reddit refuses the request or the profile history is hidden,
+    Auto switches to the Arctic Shift archive, which may lag behind and omits deleted content.
+    Tip: bookmark <code>?u=username</code> to jump straight to someone.</p>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const PAGE = 100;
+  const ARCHIVE = "https://arctic-shift.photon-reddit.com/api";
+
+  const state = { user: "", type: "all", source: "auto", activeSource: null,
+                  items: [], seen: new Set(), cursor: null, done: false, busy: false };
+
+  // ---------- Data sources ----------
+
+  async function getJSON(url) {
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
+  function fromReddit(child) {
+    const d = child.data;
+    const isPost = child.kind === "t3";
+    return {
+      id: d.name, kind: isPost ? "post" : "comment", created: d.created_utc,
+      subreddit: d.subreddit, score: d.score,
+      title: isPost ? d.title : null,
+      context: isPost ? null : d.link_title,
+      body: isPost ? (d.selftext || (d.is_self ? "" : d.url)) : d.body,
+      permalink: "https://www.reddit.com" + d.permalink,
+      comments: isPost ? d.num_comments : null,
+    };
+  }
+
+  function fromArchive(d, kind) {
+    const isPost = kind === "post";
+    const linkId = (d.link_id || "").replace(/^t3_/, "");
+    const permalink = d.permalink
+      ? "https://www.reddit.com" + d.permalink
+      : `https://www.reddit.com/r/${d.subreddit}/comments/${linkId}/_/${d.id}/`;
+    return {
+      id: (isPost ? "t3_" : "t1_") + d.id, kind, created: d.created_utc,
+      subreddit: d.subreddit, score: d.score,
+      title: isPost ? d.title : null, context: null,
+      body: isPost ? (d.selftext || (d.is_self ? "" : d.url || "")) : d.body,
+      permalink, comments: isPost ? d.num_comments : null,
+    };
+  }
+
+  const reddit = {
+    name: "Reddit (live)",
+    async page(user, type, cursor) {
+      const path = { all: "overview", posts: "submitted", comments: "comments" }[type];
+      const url = `https://www.reddit.com/user/${encodeURIComponent(user)}/${path}.json` +
+                  `?limit=${PAGE}&sort=new&raw_json=1` + (cursor ? `&after=${cursor}` : "");
+      const json = await getJSON(url);
+      const items = (json.data?.children || []).map(fromReddit);
+      return { items, cursor: json.data?.after || null };
+    },
+    async about(user) {
+      const json = await getJSON(`https://www.reddit.com/user/${encodeURIComponent(user)}/about.json?raw_json=1`);
+      return json.data;
+    },
+  };
+
+  const archive = {
+    name: "Arctic Shift (archive)",
+    // cursor = { posts: epoch|null|false, comments: epoch|null|false }; false means exhausted
+    async page(user, type, cursor) {
+      cursor = cursor || { posts: type === "comments" ? false : null, comments: type === "posts" ? false : null };
+      const fetchKind = async (kind) => {
+        if (cursor[kind] === false) return [];
+        const url = `${ARCHIVE}/${kind}/search?author=${encodeURIComponent(user)}&limit=${PAGE}&sort=desc` +
+                    (cursor[kind] ? `&before=${cursor[kind]}` : "");
+        const json = await getJSON(url);
+        if (json.error) throw new Error(json.error);
+        return (json.data || []).map((d) => fromArchive(d, kind === "posts" ? "post" : "comment"));
+      };
+      const [posts, comments] = await Promise.all([fetchKind("posts"), fetchKind("comments")]);
+      const next = {
+        posts: cursor.posts === false || posts.length < PAGE ? false : posts[posts.length - 1].created,
+        comments: cursor.comments === false || comments.length < PAGE ? false : comments[comments.length - 1].created,
+      };
+      const done = next.posts === false && next.comments === false;
+      return { items: posts.concat(comments), cursor: done ? null : next };
+    },
+  };
+
+  // ---------- Loading ----------
+
+  function cleanUser(raw) {
+    return raw.trim().replace(/^https?:\/\/(www\.|old\.)?reddit\.com\/(u|user)\//i, "")
+              .replace(/^\/?u\//i, "").replace(/[\/?#].*$/, "");
+  }
+
+  function reset() {
+    Object.assign(state, { items: [], seen: new Set(), cursor: null, done: false, activeSource: null });
+    $("results").innerHTML = "";
+    $("loadMore").hidden = true;
+  }
+
+  async function start() {
+    if (!state.user) return;
+    reset();
+    const url = new URL(location.href);
+    url.searchParams.set("u", state.user);
+    history.replaceState(null, "", url);
+    showProfile();
+    await loadMore();
+  }
+
+  async function loadMore() {
+    if (state.busy || state.done || !state.user) return;
+    state.busy = true;
+    $("loadMore").disabled = true;
+    setStatus(state.items.length ? "Loading more…" : `Loading u/${state.user}…`);
+    try {
+      let result;
+      const src = state.activeSource || (state.source === "archive" ? archive : reddit);
+      try {
+        result = await src.page(state.user, state.type, state.cursor);
+        state.activeSource = src;
+        // Reddit returns nothing for hidden histories, so try the archive on an empty first page.
+        if (state.source === "auto" && src === reddit && !state.items.length && !result.items.length) {
+          const alt = await archive.page(state.user, state.type, null);
+          if (alt.items.length) { result = alt; state.activeSource = archive; }
+        }
+      } catch (err) {
+        if (state.source !== "auto" || src === archive) throw err;
+        result = await archive.page(state.user, state.type, null);
+        state.activeSource = archive;
+      }
+      const fresh = result.items.filter((i) => !state.seen.has(i.id));
+      fresh.forEach((i) => state.seen.add(i.id));
+      state.items = state.items.concat(fresh).sort((a, b) => b.created - a.created);
+      state.cursor = result.cursor;
+      state.done = !result.cursor || !fresh.length;
+      render();
+      const count = state.items.length;
+      setStatus(count
+        ? `${count} item${count === 1 ? "" : "s"} from ${state.activeSource.name}${state.done ? ", end of history" : ""}.`
+        : `Nothing found for u/${state.user} in ${state.activeSource.name}. The account may not exist, ` +
+          `may be suspended, or may have no public activity.`);
+    } catch (err) {
+      setStatus(`Could not load u/${state.user}: ${err.message}. Reddit sometimes blocks anonymous requests; ` +
+                `try switching the source, or use the links above.`, true);
+    } finally {
+      state.busy = false;
+      $("loadMore").disabled = false;
+      $("loadMore").hidden = state.done || !state.items.length;
+    }
+  }
+
+  async function showProfile() {
+    const box = $("profile");
+    const u = encodeURIComponent(state.user);
+    const links = `<div class="links">Open: <a href="https://www.reddit.com/user/${u}/" target="_blank" rel="noopener">Reddit profile</a>
+      · <a href="https://www.google.com/search?q=${encodeURIComponent(`site:reddit.com "u/${state.user}"`)}" target="_blank" rel="noopener">Google search</a></div>`;
+    box.hidden = false;
+    box.innerHTML = `<strong>u/${esc(state.user)}</strong>${links}`;
+    try {
+      const d = await reddit.about(state.user);
+      const joined = new Date(d.created_utc * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+      box.innerHTML = `<strong>u/${esc(d.name)}</strong> · joined ${joined} · ` +
+        `${(d.link_karma || 0).toLocaleString("en-GB")} post karma · ${(d.comment_karma || 0).toLocaleString("en-GB")} comment karma${links}`;
+    } catch { /* profile summary is optional */ }
+  }
+
+  // ---------- Rendering ----------
+
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  function ago(sec) {
+    const s = Date.now() / 1000 - sec;
+    const units = [[31536000, "y"], [2592000, "mo"], [86400, "d"], [3600, "h"], [60, "m"]];
+    for (const [n, u] of units) if (s >= n) return `${Math.floor(s / n)}${u} ago`;
+    return "just now";
+  }
+
+  function render() {
+    const q = $("filter").value.trim().toLowerCase();
+    const shown = state.items.filter((i) => state.type === "all" || (state.type === "posts") === (i.kind === "post"))
+      .filter((i) => !q || [i.subreddit, i.title, i.context, i.body].some((f) => (f || "").toLowerCase().includes(q)));
+    $("results").innerHTML = shown.map((i) => {
+      const date = new Date(i.created * 1000);
+      const head = i.kind === "post"
+        ? `<h2><a href="${esc(i.permalink)}" target="_blank" rel="noopener">${esc(i.title)}</a></h2>`
+        : (i.context ? `<div class="context">on <a href="${esc(i.permalink)}" target="_blank" rel="noopener">${esc(i.context)}</a></div>` : "");
+      return `<article class="item">
+        <div class="meta">
+          <span class="kind">${i.kind === "post" ? "Post" : "Comment"}</span>
+          <span>r/${esc(i.subreddit)}</span>
+          <span title="${esc(date.toLocaleString("en-GB"))}">${ago(i.created)}</span>
+          ${i.score != null ? `<span>${i.score} points</span>` : ""}
+          ${i.comments != null ? `<span>${i.comments} comments</span>` : ""}
+          <a href="${esc(i.permalink)}" target="_blank" rel="noopener">open</a>
+        </div>
+        ${head}
+        ${i.body ? `<div class="body">${esc(i.body)}</div>` : ""}
+      </article>`;
+    }).join("");
+    document.querySelectorAll(".body").forEach((el) => {
+      if (el.scrollHeight > el.clientHeight + 4) {
+        el.classList.add("clamped");
+        const btn = document.createElement("button");
+        btn.className = "more"; btn.type = "button"; btn.textContent = "Show more";
+        btn.onclick = () => { el.style.maxHeight = "none"; el.classList.remove("clamped"); btn.remove(); };
+        el.after(btn);
+      }
+    });
+  }
+
+  function setStatus(msg, isError = false) {
+    const el = $("status");
+    el.hidden = !msg;
+    el.textContent = msg;
+    el.classList.toggle("error", isError);
+  }
+
+  // ---------- Wiring ----------
+
+  $("form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    state.user = cleanUser($("user").value);
+    $("user").value = state.user;
+    start();
+  });
+  document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+    state.type = b.dataset.type;
+    start();
+  }));
+  $("source").addEventListener("change", (e) => { state.source = e.target.value; start(); });
+  $("filter").addEventListener("input", render);
+  $("loadMore").addEventListener("click", loadMore);
+
+  const initial = new URLSearchParams(location.search).get("u");
+  if (initial) { state.user = cleanUser(initial); $("user").value = state.user; start(); }
+  else $("user").focus();
+})();
+</script>
+</body>
+</html>
